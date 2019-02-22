@@ -1,0 +1,1689 @@
+--------------------------------联想广告需求
+广州白云机场
+成都双流机场T2
+武汉机场T3
+西安阳机场T2
+杭州萧山机场T1&T3
+青岛机场
+大连机场
+厦门机场T4
+苏州高铁站
+----算半径 M
+12756274*asin(Sqrt(power(sin((aa.lati-b.lati)*0.008726646),2)+Cos(aa.lati*0.0174533)*Cos(b.lati*0.0174533)*power(sin((aa.longi-b.longi)*0.008726646),2)))
+----融合表数据
+dwi_m.dwi_res_regn_mergelocation_msk_d
+----停留表数据
+dwi_m.dwi_res_regn_staypoint_msk_d
+----当前居住地
+dws_m.dws_wdtb_resident_msk_w
+----当前工作地
+dws_m.dws_wdtb_workplace_msk_w
+----职居地融合表
+dws_m.dws_wdtb_work_resi_transit_msk_m
+----网格表
+dim.dim_geotag_grid
+----------信令模型
+oiddbstl.bt_regetl_oidd
+-----------手机价位
+trmnl_price_range
+----------消费能力
+dws_m.dws_wdtb_mobile_user_info_msk_m
+--------- crm入网时长
+dwi_m.dwi_sev_user_main_info_msk_m
+----------消费金额
+dwi_m.dwi_act_acct_user_fee_msk_m
+--
+add jar /home/data_m/Liuzx/dailyUDF/grid_2.0.1.jar;
+CREATE TEMPORARY FUNCTION gridc as 'com.bigdata.grid.GridByCircleUDF';
+CREATE TEMPORARY FUNCTION gridev AS 'com.bigdata.grid.GridUDF';
+-----------------------------------
+add jar /home/data_m/Liuzx/dailyUDF/grid_2.0.1.jar;
+CREATE TEMPORARY FUNCTION gridc as 'com.bigdata.grid.GridByCircleUDF';
+-------------------
+add jar /home/data_m/Liuzx/dailyUDF/longilatiaddgrid.jar;
+CREATE TEMPORARY FUNCTION addgrid as 'UDF.findGridByBoundaryUDF';
+---------
+add jar /home/data_m/Liuzx/dailyUDF/bdse-common-1.2.15.jar;
+CREATE TEMPORARY FUNCTION  zhuanzhuan as 'cn.ctyun.bigdata.bdse.common.hive.udf.Zhuanhuan';
+-------------------------------确定机场边界
+create external table data_m.tmp_lzx_lxjc_bianjie(
+transrgn_id string,
+transrgn_name string,
+transrgn_type string,
+boundary string
+)
+row format delimited fields terminated by '\u0005'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_bianjie';
+-------------------------------------------
+insert overwrite table data_m.tmp_lzx_lxjc_bianjie
+  select *
+    from dim.dim_traffic_station
+   where transrgn_name rlike
+   '白云|双流|武汉|西安|杭州|青岛|大连|厦门'
+     and transrgn_type in ('110101', '110102', '110103')
+  union all
+  select *
+    from dim.dim_traffic_station
+   where transrgn_name = '江苏省苏州市苏州北站'
+     and transrgn_type = '110203';
+-------------------------------停留表圈人，不规则多边形
+drop table data_m.tmp_lzx_lxjc_jicangrenshu;
+create external table data_m.tmp_lzx_lxjc_jicangrenshu(
+mdn                     string,
+grid_longi              string,
+grid_lati               string,
+grid_id                 string,
+city_id                 string,
+county_id               string,
+etime                   string,
+ltime                   string,
+duration                string,
+grid_first_time         string,
+grid_last_time          string,
+first_longi             string,
+first_lati              string,
+last_longi              string,
+last_lati               string
+)
+partitioned by (
+day_id string,
+transrgn_name string)
+row format delimited fields terminated by '\u0005'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_jicangrenshu';
+--------------------------------找到停留表中去过指定地方的人
+insert overwrite table data_m.tmp_lzx_lxjc_jicangrenshu partition
+  (day_id, transrgn_name)
+  select mdn,
+         grid_longi,
+         grid_lati,
+         grid_id,
+         city_id,
+         county_id,
+         etime,
+         ltime,
+         duration,
+         grid_first_time,
+         grid_last_time,
+         first_longi,
+         first_lati,
+         last_longi,
+         last_lati,
+         day_id,
+         '${}' transrgn_name
+    from dwi_m.dwi_res_regn_staypoint_msk_d
+   where day_id >= 20180420
+     and day_id <= 20180531
+     and city_id in ('82102','83301','83502','83702','84201','84401','85101','86104','83205')
+     and zhuanzhuan('${}', grid_id) = 1;
+-------------------出现跨域行为的人
+DROP table data_m.tmp_lzx_lxjc_jicangrenshu_kuayu;
+create external table data_m.tmp_lzx_lxjc_jicangrenshu_kuayu(
+mdn                     string,
+city_id                 string
+)
+partitioned by (
+day_id string)
+row format delimited fields terminated by '\u0005'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_jicangrenshu_kuayu';
+---------------------------------------------------------
+nohup hive -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+insert overwrite table data_m.tmp_lzx_lxjc_jicangrenshu_kuayu partition
+  (day_id)
+  select distinct a.mdn, a.city_id, a.day_id
+    from (select distinct mdn,
+                          case
+                            when city_id = '82102' or next_city_id = '82102' then
+                             '82102'
+                            when city_id = '83301' or next_city_id = '83301' then
+                             '83301'
+                            when city_id = '83502' or next_city_id = '83502' then
+                             '83502'
+                            when city_id = '83702' or next_city_id = '83702' then
+                             '83702'
+                            when city_id = '84201' or next_city_id = '84201' then
+                             '84201'
+                            when city_id = '84401' or next_city_id = '84401' then
+                             '84401'
+                            when city_id = '85101' or next_city_id = '85101' then
+                             '85101'
+                            when city_id = '86104' or next_city_id = '86104' then
+                             '86104'
+                            when city_id = '83205' or next_city_id = '83205' then
+                             '83205'
+                            else
+                             0
+                          end city_id,
+                          day_id
+            from dws_m.dws_wdtb_history_access_city_msk_d
+           where day_id >= 20180516
+             and day_id <= 20180610
+          union all
+          select distinct mdn,
+                          case
+                            when city_id = '82102' then
+                             '82102'
+                            when city_id = '83301' then
+                             '83301'
+                            when city_id = '83502' then
+                             '83502'
+                            when city_id = '83702' then
+                             '83702'
+                            when city_id = '84201' then
+                             '84201'
+                            when city_id = '84401' then
+                             '84401'
+                            when city_id = '85101' then
+                             '85101'
+                            when city_id = '86104' then
+                             '86104'
+                            when city_id = '83205' then
+                             '83205'
+                            else
+                             0
+                          end city_id,
+                          day_id
+            from dws_m.dws_wdtb_current_access_city_msk_d
+           where day_id >= 20180516
+             and day_id <= 20180610) a
+   where a.city_id != 0;" > tmp_lzx_lxjc_jicangrenshu_kuayu2.log &
+--------------------------------在机场停留大于45分钟，高铁停留20分钟的人
+drop table data_m.tmp_lzx_lxjc_jicangrenshu_4520;
+create external table data_m.tmp_lzx_lxjc_jicangrenshu_4520(
+mdn                     string,
+grid_longi              string,
+grid_lati               string,
+grid_id                 string,
+city_id                 string,
+county_id               string,
+etime                   string,
+ltime                   string,
+duration                string,
+grid_first_time         string,
+grid_last_time          string,
+first_longi             string,
+first_lati              string,
+last_longi              string,
+last_lati               string
+)
+partitioned by (
+day_id string,
+transrgn_name string)
+row format delimited fields terminated by '\u0005'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_jicangrenshu_4520';
+--------------------------------------------------------------------
+insert overwrite table data_m.tmp_lzx_lxjc_jicangrenshu_4520 partition
+  (day_id, transrgn_name)
+  select bb.mdn,
+         bb.grid_longi,
+         bb.grid_lati,
+         bb.grid_id,
+         bb.city_id,
+         bb.county_id,
+         bb.etime,
+         bb.ltime,
+         bb.duration,
+         bb.grid_first_time,
+         bb.grid_last_time,
+         bb.first_longi,
+         bb.first_lati,
+         bb.last_longi,
+         bb.last_lati,
+         bb.day_id,
+         bb.transrgn_name
+    from (select case
+                   when a.transrgn_name = '83205' and a.dur >= 20 then
+                    a.mdn
+                   when a.transrgn_name != '83205' and a.dur >= 40 then
+                    a.mdn
+                 end mdn,
+                 a.day_id,
+                 a.transrgn_name
+            from (select mdn, sum(duration) dur, day_id, transrgn_name
+                    from data_m.tmp_lzx_lxjc_jicangrenshu
+                   group by mdn, day_id, transrgn_name) a) aa
+    join data_m.tmp_lzx_lxjc_jicangrenshu bb
+      on aa.mdn = bb.mdn
+     and aa.day_id = bb.day_id
+     and aa.transrgn_name = bb.transrgn_name;
+---------------------------------------------符合机场条件的人群
+drop table data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq;
+create external table data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq(
+mdn                     string,
+grid_longi              string,
+grid_lati               string,
+grid_id                 string,
+city_id                 string,
+county_id               string,
+etime                   string,
+ltime                   string,
+duration                string,
+grid_first_time         string,
+grid_last_time          string,
+first_longi             string,
+first_lati              string,
+last_longi              string,
+last_lati               string
+)
+partitioned by (
+day_id string,
+transrgn_name string)
+row format delimited fields terminated by '\u0005'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_jicangrenshu_jcfxrq';
+-------------
+insert overwrite table data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq partition
+  (day_id, transrgn_name)
+  select a.mdn,
+         a.grid_longi,
+         a.grid_lati,
+         a.grid_id,
+         a.city_id,
+         a.county_id,
+         a.etime,
+         a.ltime,
+         a.duration,
+         a.grid_first_time,
+         a.grid_last_time,
+         a.first_longi,
+         a.first_lati,
+         a.last_longi,
+         a.last_lati,
+         a.day_id,
+         a.transrgn_name
+    from (select *
+            from data_m.tmp_lzx_lxjc_jicangrenshu_4520) a
+    join data_m.tmp_lzx_lxjc_jicangrenshu_kuayu b
+      on a.mdn = b.mdn
+     and a.day_id = b.day_id
+     and a.transrgn_name = b.city_id;
+------------------------------------------------
+data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq
+---------------------------------------------------------------------------机场,高铁站的人数和人次
+select count(mdn), count(distinct mdn)
+  from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq
+ where transrgn_name != '83205';
+-------------
+select count(mdn), count(distinct mdn)
+  from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq;
+-------------------
+select day_id, transrgn_name, count(mdn), count(distinct mdn)
+  from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq
+ group by day_id, transrgn_name;
+ -------------
+ select transrgn_name, count(mdn), count(distinct mdn)
+  from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq
+ group by transrgn_name;
+---------------------------------------------------------------------------旅客画像统计
+----------------------------------------------------------性别
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select b.gender, count(distinct a.mdn)
+  from (select distinct mdn from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select accs_nbr mdn, gender, age, online_dur
+          from dwi_m.dwi_sev_user_main_info_msk_m
+         where month_id = '201804'
+           and prod_inst_status in ('100000', '120000')
+           and open_date_desc = '1') b
+    on a.mdn = b.mdn
+ group by b.gender;" > sum_xb.log &
+----------------------机场总体性别
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select b.gender, count(distinct a.mdn)
+  from (select distinct mdn
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx
+         where transrgn_name not in ('83205', '83205_max')) a
+  join (select accs_nbr mdn, gender, age, online_dur
+          from dwi_m.dwi_sev_user_main_info_msk_m
+         where month_id = '201804'
+           and prod_inst_status in ('100000', '120000')
+           and open_date_desc = '1') b
+    on a.mdn = b.mdn
+ group by b.gender;" > jichangi_xb.log &
+--------------------分机场、高铁统计
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select a.transrgn_name, b.gender, count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select accs_nbr mdn, gender, age, online_dur
+          from dwi_m.dwi_sev_user_main_info_msk_m
+         where month_id = '201804'
+           and prod_inst_status in ('100000', '120000')
+           and open_date_desc = '1') b
+    on a.mdn = b.mdn
+ group by a.transrgn_name, b.gender;" > fenlei_xb.log &
+--------------------------------------------------年龄、
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select count(distinct case
+               when b.age >= 1 and b.age <= 18 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 19 and b.age <= 25 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 26 and b.age <= 30 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 31 and b.age <= 35 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 36 and b.age <= 40 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 41 and b.age <= 45 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 46 and b.age <= 50 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 51 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select accs_nbr mdn, gender, age, online_dur
+          from dwi_m.dwi_sev_user_main_info_msk_m
+         where month_id = '201804'
+           and prod_inst_status in ('100000', '120000')
+           and open_date_desc = '1') b
+    on a.mdn = b.mdn;" > sum_age.log &
+----------------------机场总体年龄
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select count(distinct case
+               when b.age >= 1 and b.age <= 18 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 19 and b.age <= 25 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 26 and b.age <= 30 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 31 and b.age <= 35 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 36 and b.age <= 40 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 41 and b.age <= 45 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 46 and b.age <= 50 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 51 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx
+         where transrgn_name not in ('83205', '83205_max')) a
+  join (select accs_nbr mdn, gender, age, online_dur
+          from dwi_m.dwi_sev_user_main_info_msk_m
+         where month_id = '201804'
+           and prod_inst_status in ('100000', '120000')
+           and open_date_desc = '1') b
+    on a.mdn = b.mdn;" > jichang_sum_age.log &
+--------------------分机场、高铁统计
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select a.transrgn_name,
+       count(distinct case
+               when b.age >= 1 and b.age <= 18 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 19 and b.age <= 25 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 26 and b.age <= 30 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 31 and b.age <= 35 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 36 and b.age <= 40 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 41 and b.age <= 45 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 46 and b.age <= 50 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age >= 51 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.age <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select accs_nbr mdn, gender, age, online_dur
+          from dwi_m.dwi_sev_user_main_info_msk_m
+         where month_id = '201804'
+           and prod_inst_status in ('100000', '120000')
+           and open_date_desc = '1') b
+    on a.mdn = b.mdn
+ group by a.transrgn_name;" > fenlei_age.log &
+-------------------------------入网时长统计
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select count(distinct case
+               when b.online_dur / 12 > 0 and b.online_dur / 12 <= 1 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 1 and b.online_dur / 12 <= 3 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 3 and b.online_dur / 12 <= 5 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 5 and b.online_dur / 12 <= 8 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 8 and b.online_dur / 12 <= 10 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 10 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select accs_nbr mdn, gender, age, online_dur
+          from dwi_m.dwi_sev_user_main_info_msk_m
+         where month_id = '201804'
+           and prod_inst_status in ('100000', '120000')
+           and open_date_desc = '1') b
+    on a.mdn = b.mdn;" > sum_shichang.log &
+-------------------------------机场入网时长统计
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select count(distinct case
+               when b.online_dur / 12 > 0 and b.online_dur / 12 <= 1 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 1 and b.online_dur / 12 <= 3 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 3 and b.online_dur / 12 <= 5 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 5 and b.online_dur / 12 <= 8 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 8 and b.online_dur / 12 <= 10 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 10 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx
+         where transrgn_name not in ('83205', '83205_max')) a
+  join (select accs_nbr mdn, gender, age, online_dur
+          from dwi_m.dwi_sev_user_main_info_msk_m
+         where month_id = '201804'
+           and prod_inst_status in ('100000', '120000')
+           and open_date_desc = '1') b
+    on a.mdn = b.mdn;" > jichang_sum_shichang.log &
+----------------------分类入网时长汇总
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select a.transrgn_name,
+       count(distinct case
+               when b.online_dur / 12 > 0 and b.online_dur / 12 <= 1 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 1 and b.online_dur / 12 <= 3 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 3 and b.online_dur / 12 <= 5 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 5 and b.online_dur / 12 <= 8 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 8 and b.online_dur / 12 <= 10 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 > 10 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.online_dur / 12 <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select accs_nbr mdn, gender, age, online_dur
+          from dwi_m.dwi_sev_user_main_info_msk_m
+         where month_id = '201804'
+           and prod_inst_status in ('100000', '120000')
+           and open_date_desc = '1') b
+    on a.mdn = b.mdn
+ group by a.transrgn_name;" > femlei_shichang.log &
+------------------------------------------------------------------总体手机价位
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select count(distinct case
+               when b.trmnl_price > 0 and b.trmnl_price <= 500 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 500 and b.trmnl_price <= 1000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 1000 and b.trmnl_price <= 1500 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 1500 and b.trmnl_price <= 2000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 2000 and b.trmnl_price <= 3000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 3000 and b.trmnl_price <= 4000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 4000 and b.trmnl_price <= 5000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 5000 and b.trmnl_price <= 6000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 6000 and b.trmnl_price <= 7000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 7000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select distinct mdn, trmnl_price
+          from dws_m.dws_wdtb_user_overall_info_msk_m
+         where month_id = 201804
+           and trmnl_price is not null
+           and trmnl_price != '') b
+    on a.mdn = b.mdn;" > sum_jiage.log &
+------------------------------------------------------------------机场总体手机价位
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select count(distinct case
+               when b.trmnl_price > 0 and b.trmnl_price <= 500 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 500 and b.trmnl_price <= 1000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 1000 and b.trmnl_price <= 1500 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 1500 and b.trmnl_price <= 2000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 2000 and b.trmnl_price <= 3000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 3000 and b.trmnl_price <= 4000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 4000 and b.trmnl_price <= 5000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 5000 and b.trmnl_price <= 6000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 6000 and b.trmnl_price <= 7000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 7000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx
+         where transrgn_name not in ('83205', '83205_max')) a
+  join (select distinct mdn, trmnl_price
+          from dws_m.dws_wdtb_user_overall_info_msk_m
+         where month_id = 201804
+           and trmnl_price is not null
+           and trmnl_price != '') b
+    on a.mdn = b.mdn;" > jichang_sum_jiage.log &
+----------------------------------各机场高铁站手机价位
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select a.transrgn_name,
+       count(distinct case
+               when b.trmnl_price > 0 and b.trmnl_price <= 500 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 500 and b.trmnl_price <= 1000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 1000 and b.trmnl_price <= 1500 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 1500 and b.trmnl_price <= 2000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 2000 and b.trmnl_price <= 3000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 3000 and b.trmnl_price <= 4000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 4000 and b.trmnl_price <= 5000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 5000 and b.trmnl_price <= 6000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 6000 and b.trmnl_price <= 7000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price > 7000 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.trmnl_price <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select distinct mdn, trmnl_price
+          from dws_m.dws_wdtb_user_overall_info_msk_m
+         where month_id = 201804
+           and trmnl_price is not null
+           and trmnl_price != '') b
+    on a.mdn = b.mdn
+ group by a.transrgn_name;" > fenlei_jiage.log &
+--------------------------------------------------总体消费能力
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select b.consume_ability, count(distinct a.mdn)
+  from (select distinct mdn
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select distinct mdn, consume_ability
+          from dws_m.dws_wdtb_mobile_user_info_msk_m
+         where month_id = 201712) b
+    on a.mdn = b.mdn
+ group by b.consume_ability;" > sum_xiaofeill.log &
+--------------------------------------------------机场总体消费能力
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select b.consume_ability, count(distinct a.mdn)
+  from (select distinct mdn
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx
+         where transrgn_name not in ('83205', '83205_max')) a
+  join (select distinct mdn, consume_ability
+          from dws_m.dws_wdtb_mobile_user_info_msk_m
+         where month_id = 201712) b
+    on a.mdn = b.mdn
+ group by b.consume_ability;" > jichang_xfll.log &
+---------------------------------------------------各机场，高铁站消费能力
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select b.consume_ability, a.transrgn_name, count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select distinct mdn, consume_ability
+          from dws_m.dws_wdtb_mobile_user_info_msk_m
+         where month_id = 201712) b
+    on a.mdn = b.mdn
+ group by b.consume_ability, a.transrgn_name;" > fenlei_xfll.log &
+---------------------------------------------------总体消费金额
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select count(distinct case
+               when b.fee_yuan >= 1 and b.fee_yuan <= 20 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 21 and b.fee_yuan <= 50 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 51 and b.fee_yuan <= 100 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 101 and b.fee_yuan <= 150 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 151 and b.fee_yuan <= 200 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 201 and b.fee_yuan <= 250 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 251 and b.fee_yuan <= 300 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan > 300 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select accs_nbr mdn, consume_fee / 100 fee_yuan
+          from dwi_m.dwi_act_acct_user_fee_msk_m
+         where month_id = 201804
+           and consume_fee is not null) b
+    on a.mdn = b.mdn;" > sum_xfje.log &
+---------------------------------------------------机场总体消费金额
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select count(distinct case
+               when b.fee_yuan >= 1 and b.fee_yuan <= 20 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 21 and b.fee_yuan <= 50 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 51 and b.fee_yuan <= 100 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 101 and b.fee_yuan <= 150 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 151 and b.fee_yuan <= 200 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 201 and b.fee_yuan <= 250 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 251 and b.fee_yuan <= 300 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan > 300 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx
+         where transrgn_name not in ('83205', '83205_max')) a
+  join (select accs_nbr mdn, consume_fee / 100 fee_yuan
+          from dwi_m.dwi_act_acct_user_fee_msk_m
+         where month_id = 201804
+           and consume_fee is not null) b
+    on a.mdn = b.mdn;" > jichang_xfje.log &
+---------------------------------------------------各机场、高铁站消费金额
+nohup hive -S -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt2;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+select a.transrgn_name,
+       count(distinct case
+               when b.fee_yuan >= 1 and b.fee_yuan <= 20 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 21 and b.fee_yuan <= 50 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 51 and b.fee_yuan <= 100 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 101 and b.fee_yuan <= 150 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 151 and b.fee_yuan <= 200 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 201 and b.fee_yuan <= 250 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan >= 251 and b.fee_yuan <= 300 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan > 300 then
+                a.mdn
+             end),
+       count(distinct case
+               when b.fee_yuan <= 0 then
+                a.mdn
+             end)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+  join (select accs_nbr mdn, consume_fee / 100 fee_yuan
+          from dwi_m.dwi_act_acct_user_fee_msk_m
+         where month_id = 201804
+           and consume_fee is not null) b
+    on a.mdn = b.mdn
+ group by a.transrgn_name;" > fenlei_xfje.log &
+--------------------------------------------------------------------------访问指定关键字的
+drop table data_m.tmp_lzx_lxjc_keywords;
+create external table data_m.tmp_lzx_lxjc_keywords(
+mdn                     string,
+key_words                 string
+)
+partitioned by (
+day_id string)
+row format delimited fields terminated by '\u0005'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_keywords';
+-----------------------------------------------------------------------------------------
+nohup hive -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt4;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.exec.dynamic.partition=true;
+set hive.exec.max.dynamic.partitions=100000;
+set hive.exec.max.dynamic.partitions.pernode=100000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+insert overwrite table data_m.tmp_lzx_lxjc_keywords partition
+  (day_id)
+  select distinct a.mdn, a.key_words, a.day_id
+    from (select acct_nbr mdn,
+                 case
+                   when lower(key_word) rlike '联想' then
+                    '联想'
+                   when lower(key_word) rlike 'thinkpad' then
+                    'Thinkpad'
+                   when lower(key_word) rlike '联想x280|联想x' then
+                    '联想X280'
+                   when lower(key_word) rlike
+                    'thinkpad x280|thinkpadx280|thinkpadx|thinkpad x' then
+                    'ThinkpadX280'
+                   when lower(key_word) rlike '笔记本x280|笔记本x' then
+                    '笔记本X280'
+                   when lower(key_word) rlike '电脑x280|电脑x' then
+                    '电脑X280 '
+                   when lower(key_word) rlike 'x280' then
+                    'X280 '
+                 end key_words,
+                 day_id
+            from dwi_m.dwi_evt_blog_dpi_keywords_info_msk_d
+           where day_id >= 20180616
+             and day_id <= 20180712) a
+   where a.key_words != ''
+      or a.key_words is not null;
+" > tmp_lzx_lxjc_keywords.log &
+-------------------------------------------访问指定关键字的人数
+select count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq) a
+  join data_m.tmp_lzx_lxjc_keywords b
+    on a.mdn = b.mdn;
+----------------
+select count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq
+         where transrgn_name not in ('83205', '83205_max')) a
+  join data_m.tmp_lzx_lxjc_keywords b
+    on a.mdn = b.mdn;
+----------------------------
+select a.transrgn_name, count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq) a
+  join data_m.tmp_lzx_lxjc_keywords b
+    on a.mdn = b.mdn
+ group by a.transrgn_name;
+-------------------------------------------------------------------
+select b.key_words, count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq) a
+  join data_m.tmp_lzx_lxjc_keywords b
+    on a.mdn = b.mdn
+ group by b.key_words;
+----------------
+select key_words, count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq
+         where transrgn_name not in ('83205', '83205_max')) a
+  join data_m.tmp_lzx_lxjc_keywords b
+    on a.mdn = b.mdn
+ group by key_words;
+----------------------------
+select a.transrgn_name, b.key_words, count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq) a
+  join data_m.tmp_lzx_lxjc_keywords b
+    on a.mdn = b.mdn
+ group by a.transrgn_name, b.key_words;
+------------------------------------访问指定网站的人
+drop table data_m.tmp_lzx_lxjc_site;
+create external table data_m.tmp_lzx_lxjc_site(
+mdn                     string
+)
+partitioned by (
+day_id string)
+row format delimited fields terminated by '\u0005'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_site';
+-----------------------------------------------------
+nohup hive -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt4;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.exec.dynamic.partition=true;
+set hive.exec.max.dynamic.partitions=100000;
+set hive.exec.max.dynamic.partitions.pernode=100000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+insert overwrite table data_m.tmp_lzx_lxjc_site partition
+  (day_id)
+  select distinct mdn, day_id
+    from dws_m.dws_wdtb_mbl_dpi_tag_msk_d
+   where day_id >= 20180616
+     and day_id <= 20180712
+     and tag_id = 'S041923'
+     and tag_flag = 'site';" > tmp_lzx_lxjc_site.log &
+------------------------------
+select count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq
+         where transrgn_name != '83205') a
+  join data_m.tmp_lzx_lxjc_site b
+    on a.mdn = b.mdn;
+   -
+select a.transrgn_name, count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq) a
+  join data_m.tmp_lzx_lxjc_site b
+    on a.mdn = b.mdn
+ group by a.transrgn_name;
+---------------------------------------去过指定店铺，且停留足够的时间
+drop table data_m.tmp_lzx_lxjc_dianpu;
+create external table data_m.tmp_lzx_lxjc_dianpu(
+mdn                     string,
+dianpu string
+)
+partitioned by (
+day_id string,
+transrgn_name string)
+row format delimited fields terminated by '\u0005'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_dianpu';
+-----------------------------------------------------------------------
+drop table data_m.tmp_lzx_lxjc_shoplonlat;
+create external table data_m.tmp_lzx_lxjc_shoplonlat(
+name                     string,
+lon string,
+lat string,
+gridev_id string
+)
+row format delimited fields terminated by '|'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_shoplonlat';
+----------------------------------------------------------------------------
+nohup hive -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt4;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.exec.dynamic.partition=true;
+set hive.exec.max.dynamic.partitions=100000;
+set hive.exec.max.dynamic.partitions.pernode=100000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+add jar /home/data_m/Liuzx/dailyUDF/grid_2.0.jar;
+CREATE TEMPORARY FUNCTION gridev AS 'com.bigdata.grid.GridUDF';
+
+insert overwrite table data_m.tmp_lzx_lxjc_shoplonlat
+select name, lon, lat, gridev(lon, lat) gridev_id
+  from data_m.tmp_lzx_lxjc_shoplonlat;
+------------------------------------------------------------------------------
+nohup hive -e "
+use data_m;
+set hive.cli.print.current.db=true;
+set mapreduce.job.queuename=root.bigdata.motl.mt4;
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+set mapred.output.compress=true;
+set hive.exec.compress.output=true;
+set mapred.output.compression.codec=com.hadoop.compression.lzo.LzopCodec;
+set mapred.max.split.size=512000000;
+set mapred.min.split.size.per.node=256000000;
+set mapred.min.split.size.per.rack=256000000;
+set hive.exec.dynamic.partition=true;
+set hive.exec.max.dynamic.partitions=100000;
+set hive.exec.max.dynamic.partitions.pernode=100000;
+set hive.hadoop.supports.splittable.combineinputformat=true;
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles= true;
+set hive.merge.size.per.task=134217728;
+set hive.merge.smallfiles.avgsize=150000000;
+insert overwrite table data_m.tmp_lzx_lxjc_dianpu partition
+  (day_id, transrgn_name)
+  select aa.*
+    from (select mdn,
+                 case
+                   when grid_id rlike
+                    '120620031305040|120625031305040|120625031310040|120620031310040' then
+                    '苏州市观前街北局22号人民商场家电广场1楼'
+                   when grid_id rlike '103985030625040' then
+                    '成都市武侯区武科东二路吾悦广场1F-1026'
+                   when grid_id rlike '114375030625040' then
+                    '湖北省武汉市青山区武商众圆广场一楼A馆一层1010A'
+                   when grid_id rlike '114335030550040|114335030555040' then
+                    '湖北省武汉市武昌区楚河汉街万达广场1楼1036号'
+                   when grid_id rlike
+                    '114360030525040|114360030520040|114355030520040|114355030525040' then
+                    '武汉市洪山区南湖时尚城一楼联想专卖店'
+                 end dianpu,
+                 day_id,
+                 city_id transrgn_name
+            from dwi_m.dwi_res_regn_staypoint_msk_d
+           where duration >= 15
+             and duration <= 120
+             and day_id >= 20180616
+             and day_id <= 20180712) aa
+   where aa.dianpu is not null
+     and aa.dianpu != '';
+" > tmp_lzx_lxjc_dianpu.log &
+-------------------------------------------
+select count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name, day_id
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq) a
+  join (select distinct mdn, transrgn_name, day_id
+          from data_m.tmp_lzx_lxjc_dianpu
+         where dianpu != ''
+           and dianpu is not null) b
+    on a.mdn = b.mdn
+   and a.transrgn_name = b.transrgn_name
+   and a.day_id = b.day_id;
+------------------------------------------------
+select count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name, day_id
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq
+         where transrgn_name != '83205') a
+  join (select distinct mdn, transrgn_name, day_id
+          from data_m.tmp_lzx_lxjc_dianpu
+         where dianpu != ''
+           and dianpu is not null) b
+    on a.mdn = b.mdn
+   and a.transrgn_name = b.transrgn_name
+   and a.day_id = b.day_id;
+--------------------------------------------
+select a.transrgn_name, count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name, day_id
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq) a
+  join (select distinct mdn, transrgn_name, day_id, dianpu
+          from data_m.tmp_lzx_lxjc_dianpu
+         where dianpu != ''
+           and dianpu is not null) b
+    on a.mdn = b.mdn
+   and a.transrgn_name = b.transrgn_name
+   and a.day_id = b.day_id
+ group by a.transrgn_name;
+-----------------------------------------------
+select b.dianpu, a.transrgn_name, count(distinct a.mdn)
+  from (select distinct mdn, transrgn_name, day_id
+          from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq) a
+  join (select distinct mdn, transrgn_name, day_id, dianpu
+          from data_m.tmp_lzx_lxjc_dianpu
+         where dianpu != ''
+           and dianpu is not null) b
+    on a.mdn = b.mdn
+   and a.transrgn_name = b.transrgn_name
+   and a.day_id = b.day_id
+ group by a.transrgn_name, b.dianpu;
+
+------------------------------------------------有一次行为的人
+drop table data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx;
+create external table data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx(
+mdn                     string,
+grid_longi              string,
+grid_lati               string,
+grid_id                 string,
+city_id                 string,
+county_id               string,
+etime                   string,
+ltime                   string,
+duration                string,
+grid_first_time         string,
+grid_last_time          string,
+first_longi             string,
+first_lati              string,
+last_longi              string,
+last_lati               string
+)
+partitioned by (
+day_id string,
+transrgn_name string)
+row format delimited fields terminated by '\u0005'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx';
+-----------------------------------------------------------------------
+insert overwrite table data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx partition
+  (day_id, transrgn_name)
+  select b.*
+    from (select distinct mdn from data_m.tmp_lzx_lxjc_keywords) a
+    join data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq b
+      on a.mdn = b.mdn
+  union all
+  select b.*
+    from (select distinct mdn from data_m.tmp_lzx_lxjc_site) a
+    join data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq b
+      on a.mdn = b.mdn
+  union all
+  select b.*
+    from (select distinct mdn, transrgn_name, day_id
+            from data_m.tmp_lzx_lxjc_dianpu
+           where dianpu != ''
+             and dianpu is not null) a
+    join data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq b
+      on a.mdn = b.mdn
+     and a.transrgn_name = b.transrgn_name
+     and a.day_id = b.day_id;
+--------------------
+select count(distinct mdn) from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx;
+
+select count(distinct mdn) from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx where transrgn_name!='83205';
+
+select transrgn_name,count(distinct mdn) from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx group by  transrgn_name;
+------------------------------------------------最小日期加48小时
+drop table data_m.tmp_lzx_lxjc_t_add_2;
+create external table data_m.tmp_lzx_lxjc_t_add_2(
+mdn                     string,
+min_time string,
+t_add_2 string
+)
+partitioned by (
+day_id string,
+transrgn_name string)
+row format delimited fields terminated by '\u0005'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_t_add_2';
+----------------------------------------------------
+insert overwrite table data_m.tmp_lzx_lxjc_t_add_2 partition
+  (day_id, transrgn_name)
+  select distinct mdn,
+                  substr(min_time, 1, 8) min_time,
+                  regexp_replace(date_add(concat(substr(min_time, 1, 4),
+                                                 '-',
+                                                 substr(min_time, 5, 2),
+                                                 '-',
+                                                 substr(min_time, 7, 2)),
+                                          2),
+                                 '-',
+                                 '') t_add_2,
+                  day_id,
+                  transrgn_name
+    from (select mdn, min(grid_first_time) min_time, day_id, transrgn_name
+            from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq
+           group by mdn, day_id, transrgn_name) a;
+----------------------------------------------------48小时出现上述行为的人
+drop table data_m.tmp_lzx_lxjc_48_ren;
+create external table data_m.tmp_lzx_lxjc_48_ren(
+mdn                     string
+)
+partitioned by (
+day_id string,
+transrgn_name string)
+row format delimited fields terminated by '\u0005'
+location '/tmp/liuzx/lxjc/tmp_lzx_lxjc_48_ren';
+----------------------------------------------------------------------
+insert overwrite table data_m.tmp_lzx_lxjc_48_ren partition
+  (day_id, transrgn_name)
+  select a.mdn, a.day_id, b.transrgn_name
+    from data_m.tmp_lzx_lxjc_keywords a
+    join data_m.tmp_lzx_lxjc_t_add_2 b
+      on a.mdn = b.mdn
+   where a.day_id <= b.t_add_2
+     and a.day_id >= b.min_time
+  union all
+  select a.mdn, a.day_id, b.transrgn_name
+    from data_m.tmp_lzx_lxjc_site a
+    join data_m.tmp_lzx_lxjc_t_add_2 b
+      on a.mdn = b.mdn
+   where a.day_id <= b.t_add_2
+     and a.day_id >= b.min_time
+  union all
+  select a.mdn, a.day_id, b.transrgn_name
+    from (select distinct mdn, transrgn_name, day_id
+            from data_m.tmp_lzx_lxjc_dianpu
+           where dianpu != ''
+             and dianpu is not null) a
+    join (select * from data_m.tmp_lzx_lxjc_t_add_2) b
+      on a.mdn = b.mdn
+     and a.transrgn_name = b.transrgn_name
+     and a.day_id = b.day_id
+   where a.day_id <= b.t_add_2
+     and a.day_id >= b.min_time;
+---------------------------------------------------------------------------------------------------
+select count(distinct mdn) from data_m.tmp_lzx_lxjc_48_ren;
+
+select count(distinct mdn) from data_m.tmp_lzx_lxjc_48_ren where transrgn_name!='83205';
+
+select transrgn_name,count(distinct mdn) from data_m.tmp_lzx_lxjc_48_ren group by  transrgn_name;
+--------------------------
+select aa.transrgn_name,
+       count(distinct case
+               when aa.cnt_all = 1 then
+                aa.mdn
+             end),
+       count(distinct case
+               when aa.cnt_all >= 2 and aa.cnt_all <= 3 then
+                aa.mdn
+             end),
+       count(distinct case
+               when aa.cnt_all > 3 then
+                aa.mdn
+             end)
+  from (select a.transrgn_name, a.mdn, count(a.mdn) cnt_all
+          from (select distinct day_id, mdn, transrgn_name
+                  from data_m.tmp_lzx_lxjc_jicangrenshu_jcfxrq_hx) a
+         group by a.transrgn_name, a.mdn) aa
+ group by aa.transrgn_name;
